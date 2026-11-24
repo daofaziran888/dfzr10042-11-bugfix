@@ -81,5 +81,26 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 订单抽样（导出 → 抽样报告 → 领取签核）
+
+样例订单：A 金额 9、退款 2；B 金额 10、退款 0。对外取金额最大的一个，只应有 B。
+
+| 动作 | 接口 | 说明 |
+| --- | --- | --- |
+| 取样 | `POST /api/sampling/orders` | 按原交易**数值金额**降序取样，登记快照；`row_limit` 默认 1 |
+| 对外文件 | `GET /api/sampling/orders/{id}/export` | CSV 只含「订单号、商品组」，不含金额与退款 |
+| 抽样报告 | `GET /api/sampling/orders/{id}/report` | 用快照订单原值计算金额与退款小计；`include_refund=true` 需 `X-Report-Permission: report:read` |
+| 迟到订单 | `POST /api/sampling/orders/{id}/late` | 只进迟到池，返回重新取样会选谁；不改本轮快照 |
+| 领取 | `POST /api/sampling/orders/{id}/claim` | 从**同一固定快照**取订单号与金额，重复领取 409 |
+| 签核 | `POST /api/sampling/orders/{id}/sign` | 并发只生效一次，重复签核 409 |
+
+规则：
+
+- 排序与取样在字段裁剪之前完成，用原交易的数值金额比较（9 不会排在 10 前）；
+  省略金额列后排序仍然生效，对外文件与报告引用同一批订单。
+- 同一抽样只固定一版快照；迟到订单（如 C：金额 10、退款 4）不会替换本轮已领用的订单，
+  只有在下一轮重新取样时才会参与同额次序。
+- 报告内部保留金额/退款用于复核，对外视图始终只有订单号和商品组。
+
 领域：数据工程
 子方向：数据分析与数据应用

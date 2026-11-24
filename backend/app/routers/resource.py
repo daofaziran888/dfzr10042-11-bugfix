@@ -20,6 +20,12 @@ def require_service(module: str):
         raise HTTPException(status_code=404, detail=f"未知业务模块：{module}")
     return service
 
+    try:
+        return func(*args, **kwargs)
+    except SamplingError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+
+
 
 @router.get("/{module}", response_model=PageResult[dict])
 def list_entries(

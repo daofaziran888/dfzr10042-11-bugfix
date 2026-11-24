@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 
@@ -643,6 +644,49 @@ class AnomalyDetect:
 # 数据导出 / 快照
 # ============================================================
 
+_ORDER_TOKENS_DESC = {"DESC", "DESCENDING"}
+_ORDER_TOKENS_ASC = {"ASC", "ASCENDING"}
+
+
+def parse_order_by(order_by: str) -> tuple[str, bool]:
+    """解析排序规则，返回 (字段, 是否降序)。
+
+    兼容两种写法：``-order_amount`` / ``+order_amount`` 与
+    ``order_amount DESC`` / ``order_amount ASC``。
+    """
+    spec = (order_by or "").strip()
+    if not spec:
+        return "", False
+    reverse = False
+    if spec[0] in "+-":
+        reverse = spec[0] == "-"
+        spec = spec[1:].strip()
+    tokens = spec.split()
+    if tokens and tokens[-1].upper() in (_ORDER_TOKENS_DESC | _ORDER_TOKENS_ASC):
+        reverse = tokens[-1].upper() in _ORDER_TOKENS_DESC
+        spec = " ".join(tokens[:-1]).strip()
+    return spec, reverse
+
+
+def sortable_value(value: Any) -> tuple[int, float, str]:
+    """把混合类型的字段值转成可比较的排序键。
+
+    数值字段按真实数值比较（9 不会排在 10 前面），文本字段按大小写
+    不敏感的字典序比较；缺失值单独归到最后一档。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return (2, 0.0, "")
+    if isinstance(value, bool):
+        return (0, float(value), "")
+    if isinstance(value, (int, float, Decimal)):
+        return (0, float(value), "")
+    text = str(value).strip()
+    try:
+        return (0, float(text), "")
+    except ValueError:
+        return (1, 0.0, text.casefold())
+
+
 @dataclass
 class DataExport:
     """分析结果的按需导出任务。"""
@@ -654,20 +698,51 @@ class DataExport:
     order_by: str = ""
     file_path: str = ""
 
+    def select_rows(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """按原交易行排序并截取行数，字段筛选不参与这一步。
+
+        排序和取样必须在字段裁剪之前完成：即使导出字段里没有金额，
+        也必须用原始行的数值金额决定次序；否则 ``9`` 会按字符串排在
+        ``10`` 前面，或者省略金额列后完全没有排序。
+        """
+        selected = list(rows)
+        if self.order_by:
+            key, reverse = parse_order_by(self.order_by)
+            if key:
+                present = [row for row in selected if row.get(key) not in (None, "")]
+                missing = [row for row in selected if row.get(key) in (None, "")]
+                numeric = [
+                    row for row in present if sortable_value(row.get(key))[0] == 0
+                ]
+                textual = [
+                    row for row in present if sortable_value(row.get(key))[0] != 0
+                ]
+                # sorted 是稳定排序：同额订单保持调用方给定的先后次序。
+                numeric.sort(
+                    key=lambda row: sortable_value(row.get(key)),
+                    reverse=reverse,
+                )
+                # 非数值只按文本稳定排列，且始终排在数值之后。
+                textual.sort(
+                    key=lambda row: sortable_value(row.get(key)),
+                    reverse=reverse,
+                )
+                selected = numeric + textual + missing
+        return selected[:self.row_limit]
+
     def build_row_subset(
         self, rows: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """按字段筛选和行数限制生成导出子集。"""
+        """先按原交易行排序取样，再裁剪字段，生成导出子集。"""
+        selected = self.select_rows(rows)
         if self.field_selection:
-            rows = [
+            selected = [
                 {k: v for k, v in row.items() if k in self.field_selection}
-                for row in rows
+                for row in selected
             ]
-        if self.order_by:
-            reverse = self.order_by.startswith("-")
-            key = self.order_by.lstrip("-")
-            rows = sorted(rows, key=lambda x: str(x.get(key, "")), reverse=reverse)
-        return rows[:self.row_limit]
+        return selected
 
 
 @dataclass

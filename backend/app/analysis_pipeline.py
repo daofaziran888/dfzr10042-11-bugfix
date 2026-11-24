@@ -504,6 +504,8 @@ def pipeline_query_to_snapshot(
         )
 
         export_rows = export.build_row_subset(source_rows)
+        # 快照保留排序取样后的完整行（含金额等未导出字段），报告可按原值复核。
+        snapshot_rows = export.select_rows(source_rows)
 
         # 生成 Schema 摘要
         schema_columns = [m.field_name for m in query.metrics]
@@ -515,8 +517,8 @@ def pipeline_query_to_snapshot(
         snapshot = DataSnapshot(
             snapshot_id=f"SS_{query.query_id}",
             analysis_plan_id=query.query_id,
-            data_rows=export_rows,
-            schema_summary=", ".join(set(schema_columns)),
+            data_rows=snapshot_rows,
+            schema_summary=", ".join(dict.fromkeys(schema_columns)),
             reason=f"查询{query.query_name}的结果快照",
             retention_days=90,
             dependency_version="v1.0.0",
@@ -527,6 +529,7 @@ def pipeline_query_to_snapshot(
             "snapshot_id": snapshot.snapshot_id,
             "query_name": query.query_name,
             "export_rows": len(export_rows),
+            "snapshot_rows": len(snapshot_rows),
             "export_file": export.file_path,
             "schema_summary": snapshot.schema_summary,
             "retention_days": snapshot.retention_days,
